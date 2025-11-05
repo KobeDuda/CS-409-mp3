@@ -1,29 +1,15 @@
-// routes/users.js
-const mongoose = require('mongoose');
-
 const User = require('../models/user');
+const Task = require('../models/task');
 const respond = require('../utils/response');
 
 module.exports = function (router) {
   const usersRoute = router.route("/users");
   const usersIDRoute = router.route("/users/:id");
 
-  // ===============================
-  // /users
-  // ===============================
-
-  // GET: list of users with filtering/sorting/selecting/pagination/count
+  // GET: list of users
   usersRoute.get(async (req, res) => {
     try {
-      const {
-        where,
-        sort,
-        select,
-        skip,
-        limit,
-        count
-      } = req.query;
-
+      const { where, sort, select, skip, limit, count } = req.query;
       let query = User.find();
 
       if (where) query = query.find(JSON.parse(where));
@@ -34,7 +20,7 @@ module.exports = function (router) {
 
       if (count === "true") {
         const num = await query.countDocuments();
-        return respond(res, 200, "User count retrieved successfully", num);
+        return respond(res, 200, "User count retrieved", num);
       }
 
       const users = await query.exec();
@@ -44,10 +30,12 @@ module.exports = function (router) {
     }
   });
 
-  // POST: create new user
+  // POST: create user
   usersRoute.post(async (req, res) => {
     try {
       const { name, email, pendingTasks } = req.body;
+      if (!name || !email)
+        return respond(res, 400, "Name and email are required");
 
       const newUser = new User({
         name,
@@ -57,14 +45,13 @@ module.exports = function (router) {
 
       const savedUser = await newUser.save();
       respond(res, 201, "User created successfully", savedUser);
-    } catch {
-      respond(res, 400, "Failed to create user");
+    } catch (err) {
+      if (err.code === 11000)
+        respond(res, 400, "Email already exists");
+      else
+        respond(res, 500, "Server error creating user");
     }
   });
-
-  // ===============================
-  // /users/:id
-  // ===============================
 
   // GET specific user
   usersIDRoute.get(async (req, res) => {
@@ -81,26 +68,53 @@ module.exports = function (router) {
   usersIDRoute.put(async (req, res) => {
     try {
       const { name, email, pendingTasks } = req.body;
-      const updatedUser = await User.findByIdAndUpdate(
-        req.params.id,
-        { name, email, pendingTasks },
-        { new: true, overwrite: true, runValidators: true }
+      if (!name || !email)
+        return respond(res, 400, "Name and email are required");
+
+      const user = await User.findById(req.params.id);
+      if (!user) return respond(res, 404, "User not found");
+
+      // Unassign this user's current tasks
+      await Task.updateMany(
+        { assignedUser: user._id },
+        { $set: { assignedUser: "", assignedUserName: "unassigned" } }
       );
-      if (!updatedUser) return respond(res, 404, "User not found");
-      respond(res, 200, "User updated successfully", updatedUser);
-    } catch {
-      respond(res, 400, "Failed to update user");
+
+      // Update user
+      user.name = name;
+      user.email = email;
+      user.pendingTasks = pendingTasks || [];
+      await user.save();
+
+      // Assign new pending tasks
+      if (pendingTasks && pendingTasks.length > 0) {
+        await Task.updateMany(
+          { _id: { $in: pendingTasks } },
+          { $set: { assignedUser: user._id, assignedUserName: user.name } }
+        );
+      }
+
+      respond(res, 200, "User updated successfully", user);
+    } catch (err) {
+      respond(res, 500, "Server error updating user");
     }
   });
 
   // DELETE user
   usersIDRoute.delete(async (req, res) => {
     try {
-      const deletedUser = await User.findByIdAndDelete(req.params.id);
-      if (!deletedUser) return respond(res, 404, "User not found");
-      respond(res, 200, "User deleted successfully", deletedUser);
+      const user = await User.findByIdAndDelete(req.params.id);
+      if (!user) return respond(res, 404, "User not found");
+
+      // Unassign their tasks
+      await Task.updateMany(
+        { assignedUser: user._id },
+        { $set: { assignedUser: "", assignedUserName: "unassigned" } }
+      );
+
+      respond(res, 204, "User deleted successfully");
     } catch {
-      respond(res, 400, "Failed to delete user");
+      respond(res, 500, "Server error deleting user");
     }
   });
 

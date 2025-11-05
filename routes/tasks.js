@@ -1,77 +1,52 @@
-const mongoose = require('mongoose');
+const Task = require('../models/task');
 const User = require('../models/user');
 const respond = require('../utils/response');
-
-const taskSchema = new mongoose.Schema({
-  name: String,
-  description: String,
-  deadline: Date,
-  completed: Boolean,
-  assignedUser: { type: String, default: "" },
-  assignedUserName: { type: String, default: "unassigned" },
-  dateCreated: { type: Date, default: Date.now }
-});
-
-const Task = mongoose.model('Task', taskSchema);
 
 module.exports = function (router) {
   const tasksRoute = router.route("/tasks");
   const tasksIDRoute = router.route("/tasks/:id");
 
-  // ===============================
-  // /tasks
-  // ===============================
-
-  // GET: list of tasks with filters
+  // GET tasks
   tasksRoute.get(async (req, res) => {
     try {
-      const {
-        where,
-        sort,
-        select,
-        skip,
-        limit,
-        count
-      } = req.query;
-
+      const { where, sort, select, skip, limit, count } = req.query;
       let query = Task.find();
 
       if (where) query = query.find(JSON.parse(where));
       if (sort) query = query.sort(JSON.parse(sort));
       if (select) query = query.select(JSON.parse(select));
       if (skip) query = query.skip(parseInt(skip));
-      query = query.limit(limit ? parseInt(limit) : 100); // default limit 100
+      query = query.limit(limit ? parseInt(limit) : 100);
 
       if (count === "true") {
         const num = await query.countDocuments();
-        return respond(res, 200, "Task count retrieved successfully", num);
+        return respond(res, 200, "Task count retrieved", num);
       }
 
       const tasks = await query.exec();
       respond(res, 200, "Tasks retrieved successfully", tasks);
-    } catch (err) {
+    } catch {
       respond(res, 400, "Failed to fetch tasks");
     }
   });
 
-  // POST: create a task
+  // POST task
   tasksRoute.post(async (req, res) => {
     try {
       const { name, description, deadline, completed, assignedUser } = req.body;
+      if (!name || !deadline)
+        return respond(res, 400, "Name and deadline are required");
 
       let assignedUserName = "unassigned";
       if (assignedUser) {
         const user = await User.findById(assignedUser);
-        if (user) {
-          assignedUserName = user.name;
-        } else {
-          return respond(res, 400, "Invalid user ID");
-        }
+        if (user) assignedUserName = user.name;
+        else return respond(res, 400, "Invalid assigned user");
       }
 
       const newTask = new Task({
         name,
-        description,
+        description: description || "",
         deadline,
         completed: completed || false,
         assignedUser: assignedUser || "",
@@ -80,7 +55,6 @@ module.exports = function (router) {
 
       const savedTask = await newTask.save();
 
-      // If assigned user exists, add task ID to their pendingTasks
       if (assignedUser) {
         await User.findByIdAndUpdate(assignedUser, {
           $push: { pendingTasks: savedTask._id }
@@ -89,13 +63,9 @@ module.exports = function (router) {
 
       respond(res, 201, "Task created successfully", savedTask);
     } catch {
-      respond(res, 400, "Failed to create task");
+      respond(res, 500, "Server error creating task");
     }
   });
-
-  // ===============================
-  // /tasks/:id
-  // ===============================
 
   // GET specific task
   tasksIDRoute.get(async (req, res) => {
@@ -112,23 +82,25 @@ module.exports = function (router) {
   tasksIDRoute.put(async (req, res) => {
     try {
       const { name, description, deadline, completed, assignedUser } = req.body;
+      if (!name || !deadline)
+        return respond(res, 400, "Name and deadline are required");
 
       const oldTask = await Task.findById(req.params.id);
       if (!oldTask) return respond(res, 404, "Task not found");
 
-      // Remove from old user’s pendingTasks
+      // Remove from old user's pending tasks
       if (oldTask.assignedUser) {
         await User.findByIdAndUpdate(oldTask.assignedUser, {
           $pull: { pendingTasks: oldTask._id }
         });
       }
 
-      // Get new user info
+      // Set assigned user
       let assignedUserName = "unassigned";
       if (assignedUser) {
         const user = await User.findById(assignedUser);
-        if (user) assignedUserName = user.name;
-        else return respond(res, 400, "Invalid user ID");
+        if (!user) return respond(res, 400, "Invalid assigned user");
+        assignedUserName = user.name;
       }
 
       const updatedTask = await Task.findByIdAndUpdate(
@@ -145,7 +117,7 @@ module.exports = function (router) {
 
       respond(res, 200, "Task updated successfully", updatedTask);
     } catch {
-      respond(res, 400, "Failed to update task");
+      respond(res, 500, "Server error updating task");
     }
   });
 
@@ -162,9 +134,9 @@ module.exports = function (router) {
       }
 
       await Task.findByIdAndDelete(req.params.id);
-      respond(res, 200, "Task deleted successfully", task);
+      respond(res, 204, "Task deleted successfully");
     } catch {
-      respond(res, 400, "Failed to delete task");
+      respond(res, 500, "Server error deleting task");
     }
   });
 
